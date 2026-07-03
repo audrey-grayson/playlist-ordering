@@ -1,4 +1,5 @@
 import { config } from '../config';
+import { perfLog, startTimer, timedAsync } from '../util/perf';
 import type { Song, SongFeatures } from '../algorithm/types';
 import { spotifyApi } from '../api/spotifyClient';
 import type { SpotifyTrack } from '../api/types';
@@ -28,10 +29,13 @@ export interface LoadTracksResult {
 
 /** Build Songs from already-fetched tracks using the mock provider (demo mode). */
 export async function buildDemoSongs(tracks: SpotifyTrack[]): Promise<Song[]> {
+  const done = startTimer();
   const featureMap = await mock.getFeatures(tracks);
-  return tracks
+  const songs = tracks
     .filter((t) => featureMap.has(t.id))
     .map((t) => toSong(t, featureMap.get(t.id)!));
+  perfLog('features.demo', done(), { tracks: songs.length });
+  return songs;
 }
 
 function toSong(track: SpotifyTrack, features: SongFeatures): Song {
@@ -54,7 +58,13 @@ function toSong(track: SpotifyTrack, features: SongFeatures): Song {
 export async function loadPlaylistSongs(
   playlistId: string,
 ): Promise<LoadTracksResult> {
-  const items = await spotifyApi.getPlaylistTracks(playlistId);
+  const total = startTimer();
+
+  const items = await timedAsync(
+    'playlist.tracks.fetch',
+    () => spotifyApi.getPlaylistTracks(playlistId),
+    (its) => ({ items: its.length }),
+  );
   const tracks = items
     .map((i) => i.track)
     .filter((t): t is SpotifyTrack => Boolean(t?.id) && !t?.is_local);
@@ -64,7 +74,11 @@ export async function loadPlaylistSongs(
 
   let featureMap: Map<string, SongFeatures>;
   try {
-    featureMap = await provider.getFeatures(tracks);
+    featureMap = await timedAsync(
+      'features.load',
+      () => provider.getFeatures(tracks),
+      (m) => ({ provider: provider.synthetic ? 'mock' : 'spotify', got: m.size }),
+    );
     if (featureMap.size === 0 && tracks.length > 0 && !provider.synthetic) {
       throw new Error('No audio features returned.');
     }
@@ -73,12 +87,20 @@ export async function loadPlaylistSongs(
     fallbackReason =
       e instanceof Error ? e.message : 'Spotify audio features unavailable.';
     provider = mock;
-    featureMap = await provider.getFeatures(tracks);
+    featureMap = await timedAsync(
+      'features.load.fallback',
+      () => provider.getFeatures(tracks),
+      (m) => ({ provider: 'mock', got: m.size }),
+    );
   }
 
   const songs = tracks
     .filter((t) => featureMap.has(t.id))
     .map((t) => toSong(t, featureMap.get(t.id)!));
 
+  perfLog('playlist.songs.total', total(), {
+    tracks: songs.length,
+    synthetic: provider.synthetic,
+  });
   return { songs, synthetic: provider.synthetic, fallbackReason };
 }

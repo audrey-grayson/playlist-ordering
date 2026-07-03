@@ -5,7 +5,15 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   server: {
-    port: 5173,
+    // Port 3000 + 127.0.0.1 to match the Spotify app's registered redirect URIs.
+    host: '127.0.0.1',
+    port: 3000,
+    strictPort: true,
+  },
+  preview: {
+    host: '127.0.0.1',
+    port: 3000,
+    strictPort: true,
   },
   test: {
     globals: true,

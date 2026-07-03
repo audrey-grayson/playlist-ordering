@@ -10,6 +10,7 @@ import {
 } from './algorithm/optimize';
 import type { DistanceWeights } from './algorithm/types';
 import { spotifyApi } from './api/spotifyClient';
+import { perfLog, startTimer } from './util/perf';
 import { Login } from './components/Login';
 import { PlaylistSidebar } from './components/PlaylistSidebar';
 import { TrackList } from './components/TrackList';
@@ -77,11 +78,18 @@ export default function App() {
     // Defer so the "Optimizing…" state paints before the (sync) solve runs.
     setTimeout(() => {
       try {
+        const done = startTimer();
         const result = optimizePlaylist({
           songs,
           presetId,
           weights,
           startId: startId ?? undefined,
+        });
+        perfLog('optimize.solve', done(), {
+          n: songs.length,
+          method: result.method,
+          preset: presetId,
+          improvement: `${result.stats.improvementPct.toFixed(1)}%`,
         });
         setStaged(result);
       } finally {
@@ -102,10 +110,12 @@ export default function App() {
     setConfirming(true);
     setWriteError(null);
     try {
+      const done = startTimer();
       await spotifyApi.replacePlaylistItems(
         selectedId,
         staged.order.map((s) => s.uri),
       );
+      perfLog('playlist.write', done(), { tracks: staged.order.length });
       setWriteSuccess('Playlist reordered and saved to Spotify.');
       setStaged(null);
     } catch (e) {

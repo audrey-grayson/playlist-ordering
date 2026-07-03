@@ -11,6 +11,7 @@ import type {
 } from '../api/types';
 import type { FeatureProvider } from './FeatureProvider';
 import { featureCache } from './featureCache';
+import { perfLog } from '../util/perf';
 
 function edgeFrom(section: AnalysisSection | undefined): SectionEdge | undefined {
   if (!section) return undefined;
@@ -64,6 +65,11 @@ export class SpotifyFeatureProvider implements FeatureProvider {
     // key saving: audio-analysis is one request per track, so revisiting a
     // playlist (or re-optimizing) hits the network for new tracks only.
     const toFetch = this.cache ? featureCache.missing(ids) : ids;
+    perfLog('features.cache', 0, {
+      total: ids.length,
+      hits: ids.length - toFetch.length,
+      fetch: toFetch.length,
+    });
 
     if (toFetch.length > 0) {
       const features = await spotifyApi.getAudioFeatures(toFetch);

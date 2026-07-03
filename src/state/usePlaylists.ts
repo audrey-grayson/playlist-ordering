@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { spotifyApi } from '../api/spotifyClient';
 import type { SpotifyPlaylist, SpotifyUser } from '../api/types';
 import { DEMO_PLAYLIST_METAS } from '../demo/demoData';
+import { perfLog, startTimer } from '../util/perf';
 
 interface PlaylistsState {
   user: SpotifyUser | null;
@@ -28,8 +29,10 @@ export function usePlaylists(enabled: boolean, demo = false): PlaylistsState {
     }
     setLoading(true);
     setError(null);
+    const done = startTimer();
     Promise.all([spotifyApi.getCurrentUser(), spotifyApi.getMyPlaylists()])
       .then(([u, pls]) => {
+        perfLog('playlists.load', done(), { playlists: pls.length });
         setUser(u);
         setPlaylists(pls);
       })
