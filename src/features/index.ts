@@ -26,6 +26,14 @@ export interface LoadTracksResult {
   fallbackReason?: string;
 }
 
+/** Build Songs from already-fetched tracks using the mock provider (demo mode). */
+export async function buildDemoSongs(tracks: SpotifyTrack[]): Promise<Song[]> {
+  const featureMap = await mock.getFeatures(tracks);
+  return tracks
+    .filter((t) => featureMap.has(t.id))
+    .map((t) => toSong(t, featureMap.get(t.id)!));
+}
+
 function toSong(track: SpotifyTrack, features: SongFeatures): Song {
   return {
     id: track.id,
