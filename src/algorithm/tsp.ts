@@ -9,7 +9,7 @@
 
 import { songDistance } from './distance';
 import type { DistanceWeights, Song } from './types';
-import type { PathObjective } from './fitness';
+import { aggregatePenalty, makeObjectiveContext, type PathObjective } from './fitness';
 
 /** N×N directional distance matrix: matrix[i][j] = d(songs[i] → songs[j]). */
 export function buildDistanceMatrix(
@@ -49,8 +49,8 @@ export interface CostContext {
 export function orderCost(order: number[], ctx: CostContext): number {
   const adjacency = avgAdjacency(order, ctx.matrix);
   if (!ctx.objective) return adjacency;
-  const { lambda, penalty } = ctx.objective;
-  const global = penalty(order.map((i) => ctx.songs[i]));
+  const { lambda } = ctx.objective;
+  const global = aggregatePenalty(ctx.objective, order.map((i) => ctx.songs[i]));
   return (1 - lambda) * adjacency + lambda * global;
 }
 
@@ -150,4 +150,100 @@ export function localSearch(
     if (!improved) break;
   }
   return best;
+}
+
+/**
+ * Largest playlist size for which exact Held–Karp DP is used. The DP is
+ * O(2^n · n^2) time and O(2^n · n) memory; 16 keeps it well under ~10 MB and
+ * runs in a few ms. Beyond this we fall back to the local-search heuristic.
+ */
+export const DP_EXACT_MAX = 16;
+
+function popcount(x: number): number {
+  let c = 0;
+  while (x) {
+    x &= x - 1;
+    c++;
+  }
+  return c;
+}
+
+/**
+ * Exact optimal open-path ordering via Held–Karp dynamic programming, with the
+ * fixed start at `startIndex`. The cost minimized is identical to `orderCost`:
+ * adjacency + (for objective presets) the position-decomposable global penalty,
+ * folded into per-node costs — so the DP returns the true optimum for every
+ * preset, not just pure-transition ones.
+ *
+ * Only call when `matrix.length <= DP_EXACT_MAX`.
+ */
+export function heldKarp(startIndex: number, ctx: CostContext): number[] {
+  const { matrix, songs, objective } = ctx;
+  const n = matrix.length;
+  if (n <= 1) return n === 1 ? [startIndex] : [];
+  if (n === 2) return startIndex === 0 ? [0, 1] : [startIndex, 1 - startIndex];
+
+  // Relabel so the fixed start is local index 0; map results back at the end.
+  const idx = [startIndex];
+  for (let i = 0; i < n; i++) if (i !== startIndex) idx.push(i);
+
+  const lambda = objective?.lambda ?? 0;
+  const edgeCoef = (1 - lambda) / (n - 1);
+  const nodeCoef = objective ? lambda / n : 0;
+  const octx = makeObjectiveContext(songs[startIndex]);
+
+  const dist = (a: number, b: number) => edgeCoef * matrix[idx[a]][idx[b]];
+  const nodeCost = (local: number, position: number) =>
+    objective
+      ? nodeCoef * objective.nodePenalty(songs[idx[local]], position, n, octx)
+      : 0;
+
+  const size = 1 << n;
+  const dp = new Float64Array(size * n).fill(Infinity);
+  const parent = new Int32Array(size * n).fill(-1);
+
+  const startMask = 1; // bit 0 = local start
+  dp[startMask * n + 0] = nodeCost(0, 0);
+
+  for (let S = 0; S < size; S++) {
+    if (!(S & startMask)) continue;
+    const position = popcount(S); // next appended node lands at this position
+    for (let j = 0; j < n; j++) {
+      if (!(S & (1 << j))) continue;
+      const cur = dp[S * n + j];
+      if (cur === Infinity) continue;
+      for (let k = 0; k < n; k++) {
+        if (S & (1 << k)) continue;
+        const nS = S | (1 << k);
+        const cand = cur + dist(j, k) + nodeCost(k, position);
+        if (cand < dp[nS * n + k]) {
+          dp[nS * n + k] = cand;
+          parent[nS * n + k] = j;
+        }
+      }
+    }
+  }
+
+  const full = size - 1;
+  let best = Infinity;
+  let bestJ = 0;
+  for (let j = 0; j < n; j++) {
+    if (dp[full * n + j] < best) {
+      best = dp[full * n + j];
+      bestJ = j;
+    }
+  }
+
+  // Reconstruct the local path, then map back to original indices.
+  const local: number[] = [];
+  let S = full;
+  let j = bestJ;
+  while (j !== -1) {
+    local.push(j);
+    const pj = parent[S * n + j];
+    S ^= 1 << j;
+    j = pj;
+  }
+  local.reverse();
+  return local.map((l) => idx[l]);
 }

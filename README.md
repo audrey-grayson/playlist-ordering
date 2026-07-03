@@ -44,9 +44,25 @@ objective:
 - **Custom** — set the sliders yourself.
 
 **Solver:** the playlist is an **open path** with a **fixed first song**.
-Construction is nearest-neighbor from that start; improvement is **2-opt +
-Or-opt** local search under a time budget, scored by adjacency cost blended
-with the preset's global objective.
+
+- **Small playlists (≤ 16 tracks): exact dynamic programming.** A Held–Karp DP
+  (`O(2ⁿ·n²)`) returns the *true optimum*. The global objectives are written as
+  position-decomposable per-node penalties, so even Energy Arc / Mood Journey
+  are solved exactly, not just pure-transition presets.
+- **Larger playlists: heuristic.** Nearest-neighbor construction refined by
+  **2-opt + Or-opt** local search under a time budget.
+
+The staged panel labels which was used (`exact (DP)` vs `heuristic`). Unit
+tests verify the DP matches a brute-force optimum and is never worse than the
+heuristic.
+
+### Data efficiency
+
+Audio features are stable per track and audio-analysis costs **one request per
+track**, so computed `SongFeatures` are cached in `localStorage` (only the
+trimmed fields we use — raw API payloads are discarded once section edges are
+extracted). Revisiting a playlist or re-optimizing fetches **only tracks not
+already cached**. The cache is LRU-capped so it can't grow without bound.
 
 Unit tests cover the key theory, distance blending, and optimizer invariants:
 

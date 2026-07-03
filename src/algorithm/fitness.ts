@@ -1,6 +1,11 @@
 // Selectable fitness presets. Each preset defines a weight profile over the
 // distance components and, optionally, a *global* path objective that scores
 // the whole ordering beyond pure adjacency smoothness (e.g. an energy arc).
+//
+// Global objectives are expressed as a *per-position node penalty* rather than
+// a whole-order function. This keeps them position-decomposable, which lets the
+// exact Held–Karp dynamic-programming solver fold them into its edge costs and
+// still find the true optimum (see tsp.ts).
 
 import type { DistanceWeights, Song } from './types';
 
@@ -11,14 +16,25 @@ export type PresetId =
   | 'moodJourney'
   | 'custom';
 
+/** Data derived once from the fixed start song, shared by all node penalties. */
+export interface ObjectiveContext {
+  startValence: number;
+}
+
 /**
- * A global objective returns a penalty in [0,1] for an ordering (lower is
- * better). `lambda` sets how much it counts relative to adjacency cost:
- * total = (1 - lambda) * avgAdjacency + lambda * globalPenalty.
+ * A global objective. `nodePenalty` returns the penalty in [0,1] for placing a
+ * song at 0-based `position` in a path of length `n` (lower is better).
+ * `lambda` sets how much it counts relative to adjacency cost:
+ *   total = (1 - lambda) * avgAdjacency + lambda * meanNodePenalty.
  */
 export interface PathObjective {
   lambda: number;
-  penalty: (order: Song[]) => number;
+  nodePenalty: (
+    song: Song,
+    position: number,
+    n: number,
+    ctx: ObjectiveContext,
+  ) => number;
 }
 
 export interface FitnessPreset {
@@ -29,49 +45,54 @@ export interface FitnessPreset {
   objective?: PathObjective;
 }
 
-const mean = (xs: number[]) =>
-  xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
+/** Build the shared objective context from a path's fixed first song. */
+export function makeObjectiveContext(startSong: Song | undefined): ObjectiveContext {
+  return { startValence: startSong?.features.valence ?? 0.5 };
+}
+
+/** Mean per-node penalty over an ordering, in [0,1]. */
+export function aggregatePenalty(objective: PathObjective, order: Song[]): number {
+  const n = order.length;
+  if (n === 0) return 0;
+  const ctx = makeObjectiveContext(order[0]);
+  let acc = 0;
+  for (let i = 0; i < n; i++) acc += objective.nodePenalty(order[i], i, n, ctx);
+  return acc / n;
+}
 
 /**
  * Target energy arc: rise from a modest level to a peak around 70% of the way
- * through, then cool down. Penalty is mean squared deviation of each track's
- * energy from the target curve.
+ * through, then cool down. Node penalty is the squared deviation of the track's
+ * energy from the target at its position.
  */
-function energyArcPenalty(order: Song[]): number {
-  const n = order.length;
+function energyArcNodePenalty(song: Song, position: number, n: number): number {
   if (n < 2) return 0;
-  let acc = 0;
-  for (let i = 0; i < n; i++) {
-    const t = i / (n - 1); // 0..1
-    // Skewed hump peaking at t≈0.7.
-    const peak = 0.7;
-    const target =
-      t <= peak
-        ? 0.35 + (0.95 - 0.35) * (t / peak)
-        : 0.95 - (0.95 - 0.4) * ((t - peak) / (1 - peak));
-    const d = order[i].features.energy - target;
-    acc += d * d;
-  }
-  return Math.min(1, acc / n);
+  const t = position / (n - 1); // 0..1
+  const peak = 0.7;
+  const target =
+    t <= peak
+      ? 0.35 + (0.95 - 0.35) * (t / peak)
+      : 0.95 - (0.95 - 0.4) * ((t - peak) / (1 - peak));
+  const d = song.features.energy - target;
+  return d * d; // in [0,1] since energy and target are in [0,1]
 }
 
 /**
  * Mood journey: valence should climb steadily from the first track's mood to a
- * bright target. Penalty is mean squared deviation from that linear ramp.
+ * bright target. Node penalty is squared deviation from that linear ramp.
  */
-function moodJourneyPenalty(order: Song[]): number {
-  const n = order.length;
+function moodJourneyNodePenalty(
+  song: Song,
+  position: number,
+  n: number,
+  ctx: ObjectiveContext,
+): number {
   if (n < 2) return 0;
-  const start = order[0].features.valence;
+  const t = position / (n - 1);
   const end = 0.85;
-  let acc = 0;
-  for (let i = 0; i < n; i++) {
-    const t = i / (n - 1);
-    const target = start + (end - start) * t;
-    const d = order[i].features.valence - target;
-    acc += d * d;
-  }
-  return Math.min(1, acc / n);
+  const target = ctx.startValence + (end - ctx.startValence) * t;
+  const d = song.features.valence - target;
+  return d * d;
 }
 
 export const FITNESS_PRESETS: Record<PresetId, FitnessPreset> = {
@@ -95,7 +116,7 @@ export const FITNESS_PRESETS: Record<PresetId, FitnessPreset> = {
     description:
       'Shape the set as a journey: build energy to a peak ~70% through, then cool down — while keeping transitions smooth.',
     weights: { key: 0.4, tempo: 0.5, section: 0.4, timbre: 0.6, loudness: 0.4 },
-    objective: { lambda: 0.55, penalty: energyArcPenalty },
+    objective: { lambda: 0.55, nodePenalty: energyArcNodePenalty },
   },
   moodJourney: {
     id: 'moodJourney',
@@ -103,7 +124,7 @@ export const FITNESS_PRESETS: Record<PresetId, FitnessPreset> = {
     description:
       'Lift the mood: order tracks so valence (musical positivity) climbs steadily from start to finish.',
     weights: { key: 0.4, tempo: 0.4, section: 0.3, timbre: 0.6, loudness: 0.3 },
-    objective: { lambda: 0.55, penalty: moodJourneyPenalty },
+    objective: { lambda: 0.55, nodePenalty: moodJourneyNodePenalty },
   },
   custom: {
     id: 'custom',
@@ -120,5 +141,3 @@ export const PRESET_ORDER: PresetId[] = [
   'moodJourney',
   'custom',
 ];
-
-export { mean };

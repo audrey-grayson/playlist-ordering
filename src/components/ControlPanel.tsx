@@ -122,7 +122,19 @@ export function ControlPanel(props: Props) {
 
       {staged && (
         <section className="panel-section staged-box">
-          <div className="staged-title">Staged reordering</div>
+          <div className="staged-title">
+            Staged reordering
+            <span
+              className="method-tag"
+              title={
+                staged.method === 'held-karp'
+                  ? 'Exact optimum via Held–Karp dynamic programming'
+                  : 'Approximate: nearest-neighbor + 2-opt/Or-opt local search'
+              }
+            >
+              {staged.method === 'held-karp' ? 'exact (DP)' : 'heuristic'}
+            </span>
+          </div>
           <div className="stat-grid">
             <div className="stat">
               <div className="stat-label">Transition cost</div>
