@@ -1,1 +1,1 @@
-{"root":["./src/App.tsx","./src/config.ts","./src/main.tsx","./src/vite-env.d.ts"],"version":"5.9.3"}
+{"root":["./src/App.tsx","./src/config.ts","./src/main.tsx","./src/vite-env.d.ts","./src/auth/pkce.ts","./src/auth/spotifyAuth.ts","./src/auth/tokenStore.ts","./src/auth/useAuth.ts"],"version":"5.9.3"}
