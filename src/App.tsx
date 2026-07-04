@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { config } from './config';
 import { useAuth } from './auth/useAuth';
 import { usePlaylists } from './state/usePlaylists';
@@ -6,8 +6,10 @@ import { usePlaylistSongs } from './state/usePlaylistSongs';
 import { FITNESS_PRESETS, type PresetId } from './algorithm/fitness';
 import {
   optimizePlaylist,
+  type OptimizeRequest,
   type OptimizeResult,
 } from './algorithm/optimize';
+import type { OptimizeWorkerResponse } from './algorithm/optimizeWorker';
 import type { DistanceWeights } from './algorithm/types';
 import { spotifyApi } from './api/spotifyClient';
 import { perfLog, startTimer } from './util/perf';
@@ -16,6 +18,17 @@ import { PlaylistSidebar } from './components/PlaylistSidebar';
 import { TrackList } from './components/TrackList';
 import { ControlPanel } from './components/ControlPanel';
 import './styles/app.css';
+
+/** Spawn the optimize worker, or null if Web Workers aren't available. */
+function createOptimizeWorker(): Worker | null {
+  try {
+    return new Worker(new URL('./algorithm/optimizeWorker.ts', import.meta.url), {
+      type: 'module',
+    });
+  } catch {
+    return null;
+  }
+}
 
 export default function App() {
   const auth = useAuth();
@@ -41,6 +54,17 @@ export default function App() {
   const [confirming, setConfirming] = useState(false);
   const [writeError, setWriteError] = useState<string | null>(null);
   const [writeSuccess, setWriteSuccess] = useState<string | null>(null);
+
+  // The solve runs in a Web Worker so a large playlist can churn for a few
+  // seconds without freezing the UI (and the loading spinner keeps spinning).
+  const workerRef = useRef<Worker | null>(null);
+  useEffect(() => {
+    workerRef.current = createOptimizeWorker();
+    return () => {
+      workerRef.current?.terminate();
+      workerRef.current = null;
+    };
+  }, []);
 
   // When a preset is chosen, seed the sliders from its profile.
   const onPresetChange = (id: PresetId) => {
@@ -75,27 +99,64 @@ export default function App() {
     setOptimizing(true);
     setWriteError(null);
     setWriteSuccess(null);
-    // Defer so the "Optimizing…" state paints before the (sync) solve runs.
-    setTimeout(() => {
-      try {
-        const done = startTimer();
-        const result = optimizePlaylist({
-          songs,
-          presetId,
-          weights,
-          startId: startId ?? undefined,
-        });
-        perfLog('optimize.solve', done(), {
-          n: songs.length,
-          method: result.method,
-          preset: presetId,
-          improvement: `${result.stats.improvementPct.toFixed(1)}%`,
-        });
-        setStaged(result);
-      } finally {
+
+    const done = startTimer();
+    const req: OptimizeRequest = {
+      songs,
+      presetId,
+      weights,
+      startId: startId ?? undefined,
+    };
+
+    const finish = (result: OptimizeResult) => {
+      perfLog('optimize.solve', done(), {
+        n: songs.length,
+        method: result.method,
+        segments: result.segments,
+        preset: presetId,
+        improvement: `${result.stats.improvementPct.toFixed(1)}%`,
+      });
+      setStaged(result);
+      setOptimizing(false);
+    };
+
+    const worker = workerRef.current;
+    if (!worker) {
+      // No worker (unsupported env): solve on the main thread after a paint.
+      setTimeout(() => {
+        try {
+          finish(optimizePlaylist(req));
+        } catch (e) {
+          setWriteError(e instanceof Error ? e.message : String(e));
+          setOptimizing(false);
+        }
+      }, 20);
+      return;
+    }
+
+    // Safety net: the solver self-limits to ~4s, so if nothing comes back well
+    // past that, kill the worker and recover rather than spinning forever.
+    const killer = window.setTimeout(() => {
+      worker.removeEventListener('message', onMessage);
+      worker.terminate();
+      workerRef.current = createOptimizeWorker();
+      setWriteError(
+        'Optimization timed out. Try a smaller playlist or a different start track.',
+      );
+      setOptimizing(false);
+    }, (req.timeBudgetMs ?? 4000) + 4000);
+
+    const onMessage = (ev: MessageEvent<OptimizeWorkerResponse>) => {
+      window.clearTimeout(killer);
+      worker.removeEventListener('message', onMessage);
+      if (ev.data.ok) finish(ev.data.result);
+      else {
+        setWriteError('Optimization failed: ' + ev.data.error);
         setOptimizing(false);
       }
-    }, 20);
+    };
+    worker.addEventListener('message', onMessage);
+    worker.postMessage(req);
   };
 
   const handleConfirm = async () => {

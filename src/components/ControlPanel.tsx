@@ -117,7 +117,14 @@ export function ControlPanel(props: Props) {
         onClick={onOptimize}
         disabled={disabled || optimizing}
       >
-        {optimizing ? 'Optimizing…' : 'Optimize'}
+        {optimizing ? (
+          <span className="optimize-busy">
+            <span className="spinner" aria-hidden="true" />
+            Optimizing…
+          </span>
+        ) : (
+          'Optimize'
+        )}
       </button>
 
       {staged && (
@@ -129,10 +136,12 @@ export function ControlPanel(props: Props) {
               title={
                 staged.method === 'held-karp'
                   ? 'Exact optimum via Held–Karp dynamic programming'
-                  : 'Approximate: nearest-neighbor + 2-opt/Or-opt local search'
+                  : `Playlist exceeded the exact-solve budget — split into ${staged.segments} randomly-partitioned segments, each solved exactly with Held–Karp`
               }
             >
-              {staged.method === 'held-karp' ? 'exact (DP)' : 'heuristic'}
+              {staged.method === 'held-karp'
+                ? 'exact (DP)'
+                : `split × ${staged.segments} (DP)`}
             </span>
           </div>
           <div className="stat-grid">

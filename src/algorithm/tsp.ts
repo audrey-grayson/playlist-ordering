@@ -9,7 +9,12 @@
 
 import { songDistance } from './distance';
 import type { DistanceWeights, Song } from './types';
-import { aggregatePenalty, makeObjectiveContext, type PathObjective } from './fitness';
+import {
+  aggregatePenalty,
+  makeObjectiveContext,
+  type ObjectiveContext,
+  type PathObjective,
+} from './fitness';
 
 /** N×N directional distance matrix: matrix[i][j] = d(songs[i] → songs[j]). */
 export function buildDistanceMatrix(
@@ -153,11 +158,23 @@ export function localSearch(
 }
 
 /**
- * Largest playlist size for which exact Held–Karp DP is used. The DP is
- * O(2^n · n^2) time and O(2^n · n) memory; 16 keeps it well under ~10 MB and
- * runs in a few ms. Beyond this we fall back to the local-search heuristic.
+ * Largest playlist size we attempt to solve *exactly* with Held–Karp DP. The DP
+ * is O(2^n · n^2) time and O(2^n · n) memory; at n=20 that is ~250 MB and under
+ * ~2 s, comfortably inside the time budget. Larger playlists are handled by the
+ * recursive random-partition strategy in `solveOptimalOrder`.
  */
-export const DP_EXACT_MAX = 16;
+export const DP_EXACT_MAX = 20;
+
+/** Wall-clock budget for a single optimize run before we split and recurse. */
+export const DP_TIME_BUDGET_MS = 4000;
+
+/**
+ * Subsets no larger than this are always solved exactly, ignoring the deadline.
+ * A DP at this size is a handful of milliseconds, so honoring it guarantees the
+ * recursion terminates: partitioning strictly shrinks subsets until they land
+ * here and resolve, even if the time budget is already spent.
+ */
+export const DP_ALWAYS_SAFE = 12;
 
 function popcount(x: number): number {
   let c = 0;
@@ -168,46 +185,72 @@ function popcount(x: number): number {
   return c;
 }
 
-/**
- * Exact optimal open-path ordering via Held–Karp dynamic programming, with the
- * fixed start at `startIndex`. The cost minimized is identical to `orderCost`:
- * adjacency + (for objective presets) the position-decomposable global penalty,
- * folded into per-node costs — so the DP returns the true optimum for every
- * preset, not just pure-transition ones.
- *
- * Only call when `matrix.length <= DP_EXACT_MAX`.
- */
-export function heldKarp(startIndex: number, ctx: CostContext): number[] {
-  const { matrix, songs, objective } = ctx;
-  const n = matrix.length;
-  if (n <= 1) return n === 1 ? [startIndex] : [];
-  if (n === 2) return startIndex === 0 ? [0, 1] : [startIndex, 1 - startIndex];
+/** Fisher–Yates shuffle in place, using a pluggable RNG (for determinism in tests). */
+function shuffleInPlace<T>(arr: T[], rng: () => number): void {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    const tmp = arr[i];
+    arr[i] = arr[j];
+    arr[j] = tmp;
+  }
+}
 
-  // Relabel so the fixed start is local index 0; map results back at the end.
-  const idx = [startIndex];
-  for (let i = 0; i < n; i++) if (i !== startIndex) idx.push(i);
+/**
+ * Exact optimal open-path ordering of a *subset* via Held–Karp DP.
+ *
+ * `subset` is a list of indices into the full song/matrix arrays; `subset[0]`
+ * is pinned first. The subset will occupy global positions `[posOffset, …)` in
+ * the final concatenation, and `totalN`/`octx` describe the whole playlist — so
+ * node penalties for global objectives (energy arc, mood journey) are evaluated
+ * at true global positions and the returned cost is this subset's exact
+ * contribution to `orderCost` over the full order (minus the single boundary
+ * edge to whatever follows, which the caller stitches).
+ *
+ * Returns `null` if the allocation fails or the `deadline` (ms epoch) is passed
+ * mid-solve; the caller then partitions instead.
+ */
+function heldKarpSubset(
+  subset: number[],
+  ctx: CostContext,
+  totalN: number,
+  posOffset: number,
+  octx: ObjectiveContext,
+  deadline: number,
+): number[] | null {
+  const { matrix, songs, objective } = ctx;
+  const n = subset.length;
+  if (n <= 1) return subset.slice();
+  if (n === 2) return subset.slice();
 
   const lambda = objective?.lambda ?? 0;
-  const edgeCoef = (1 - lambda) / (n - 1);
-  const nodeCoef = objective ? lambda / n : 0;
-  const octx = makeObjectiveContext(songs[startIndex]);
+  const edgeCoef = (1 - lambda) / (totalN - 1);
+  const nodeCoef = objective ? lambda / totalN : 0;
 
-  const dist = (a: number, b: number) => edgeCoef * matrix[idx[a]][idx[b]];
-  const nodeCost = (local: number, position: number) =>
+  const dist = (a: number, b: number) => edgeCoef * matrix[subset[a]][subset[b]];
+  const nodeCost = (local: number, globalPos: number) =>
     objective
-      ? nodeCoef * objective.nodePenalty(songs[idx[local]], position, n, octx)
+      ? nodeCoef * objective.nodePenalty(songs[subset[local]], globalPos, totalN, octx)
       : 0;
 
   const size = 1 << n;
-  const dp = new Float64Array(size * n).fill(Infinity);
-  const parent = new Int32Array(size * n).fill(-1);
+  let dp: Float64Array;
+  let parent: Int32Array;
+  try {
+    dp = new Float64Array(size * n).fill(Infinity);
+    parent = new Int32Array(size * n).fill(-1);
+  } catch {
+    return null; // out of memory — fall back to partitioning
+  }
 
-  const startMask = 1; // bit 0 = local start
-  dp[startMask * n + 0] = nodeCost(0, 0);
+  const startMask = 1; // bit 0 = pinned start (subset[0])
+  dp[startMask * n + 0] = nodeCost(0, posOffset);
 
+  const checkTime = Number.isFinite(deadline);
+  let steps = 0;
   for (let S = 0; S < size; S++) {
     if (!(S & startMask)) continue;
-    const position = popcount(S); // next appended node lands at this position
+    if (checkTime && (++steps & 0x3fff) === 0 && Date.now() > deadline) return null;
+    const globalPos = posOffset + popcount(S); // position of the next appended node
     for (let j = 0; j < n; j++) {
       if (!(S & (1 << j))) continue;
       const cur = dp[S * n + j];
@@ -215,7 +258,7 @@ export function heldKarp(startIndex: number, ctx: CostContext): number[] {
       for (let k = 0; k < n; k++) {
         if (S & (1 << k)) continue;
         const nS = S | (1 << k);
-        const cand = cur + dist(j, k) + nodeCost(k, position);
+        const cand = cur + dist(j, k) + nodeCost(k, globalPos);
         if (cand < dp[nS * n + k]) {
           dp[nS * n + k] = cand;
           parent[nS * n + k] = j;
@@ -234,7 +277,7 @@ export function heldKarp(startIndex: number, ctx: CostContext): number[] {
     }
   }
 
-  // Reconstruct the local path, then map back to original indices.
+  // Reconstruct the local path, then map back to the subset's global indices.
   const local: number[] = [];
   let S = full;
   let j = bestJ;
@@ -245,5 +288,104 @@ export function heldKarp(startIndex: number, ctx: CostContext): number[] {
     j = pj;
   }
   local.reverse();
-  return local.map((l) => idx[l]);
+  return local.map((l) => subset[l]);
+}
+
+/**
+ * Exact optimal open-path ordering via Held–Karp DP with the fixed start at
+ * `startIndex`, over all songs in `ctx`. Thin wrapper kept for callers/tests
+ * that want a guaranteed exact answer (no deadline).
+ *
+ * Only call for `matrix.length <= DP_EXACT_MAX`.
+ */
+export function heldKarp(startIndex: number, ctx: CostContext): number[] {
+  const n = ctx.matrix.length;
+  if (n <= 1) return n === 1 ? [startIndex] : [];
+  const subset = [startIndex];
+  for (let i = 0; i < n; i++) if (i !== startIndex) subset.push(i);
+  const octx = makeObjectiveContext(ctx.songs[startIndex]);
+  const solved = heldKarpSubset(subset, ctx, n, 0, octx, Infinity);
+  return solved ?? nearestNeighborPath(startIndex, ctx.matrix);
+}
+
+export interface RecursiveSolveOptions {
+  /** Attempt exact DP for subsets up to this size (default DP_EXACT_MAX). */
+  exactMax?: number;
+  /** Total wall-clock budget in ms before falling back to partitioning. */
+  timeBudgetMs?: number;
+  /** Injectable RNG for the random partition (default Math.random). */
+  rng?: () => number;
+}
+
+export interface RecursiveSolveResult {
+  /** Full ordering as indices into the song/matrix arrays; starts at `startIndex`. */
+  indexOrder: number[];
+  /** True if the whole order was solved exactly (no partition was needed). */
+  exact: boolean;
+  /** Number of exactly-solved leaf segments (1 when fully exact). */
+  segments: number;
+}
+
+/**
+ * Optimal ordering with a fixed start, scaling past the exact-DP ceiling.
+ *
+ * Small enough playlists are solved exactly (Held–Karp). When the playlist is
+ * too large to allocate, or the time budget is exhausted mid-solve, we randomly
+ * partition the *remaining* tracks into two halves — the pinned first song stays
+ * first — and recurse on each half independently, then concatenate. Each half is
+ * a smaller subproblem that is itself solved exactly (or split again), so the
+ * result is a sequence of locally-optimal segments produced within the budget.
+ */
+export function solveOptimalOrder(
+  startIndex: number,
+  ctx: CostContext,
+  opts: RecursiveSolveOptions = {},
+): RecursiveSolveResult {
+  const n = ctx.matrix.length;
+  if (n <= 1) return { indexOrder: n === 1 ? [startIndex] : [], exact: true, segments: n };
+
+  const exactMax = Math.max(2, opts.exactMax ?? DP_EXACT_MAX);
+  const deadline = Date.now() + (opts.timeBudgetMs ?? DP_TIME_BUDGET_MS);
+  const rng = opts.rng ?? Math.random;
+  const octx = makeObjectiveContext(ctx.songs[startIndex]);
+
+  // `subset[0]` is always the pinned-first song for that subproblem.
+  const solve = (
+    subset: number[],
+    posOffset: number,
+  ): RecursiveSolveResult => {
+    const m = subset.length;
+    if (m <= 1) return { indexOrder: subset.slice(), exact: true, segments: m };
+
+    if (m <= exactMax) {
+      // Subsets at/under DP_ALWAYS_SAFE ignore the deadline so recursion always
+      // bottoms out even after the budget is spent.
+      const dl = m <= DP_ALWAYS_SAFE ? Infinity : deadline;
+      const exact = heldKarpSubset(subset, ctx, n, posOffset, octx, dl);
+      if (exact) return { indexOrder: exact, exact: true, segments: 1 };
+    }
+
+    // Too big or timed out: randomly split the tail, keep the pinned song first.
+    const first = subset[0];
+    const rest = subset.slice(1);
+    shuffleInPlace(rest, rng);
+    const half = Math.ceil(rest.length / 2);
+    const aSub = [first, ...rest.slice(0, half)];
+    const bSub = rest.slice(half);
+
+    const a = solve(aSub, posOffset);
+    if (bSub.length === 0) {
+      return { indexOrder: a.indexOrder, exact: false, segments: a.segments };
+    }
+    const b = solve(bSub, posOffset + a.indexOrder.length);
+    return {
+      indexOrder: [...a.indexOrder, ...b.indexOrder],
+      exact: false,
+      segments: a.segments + b.segments,
+    };
+  };
+
+  const subset = [startIndex];
+  for (let i = 0; i < n; i++) if (i !== startIndex) subset.push(i);
+  return solve(subset, 0);
 }

@@ -5,18 +5,15 @@
 import {
   avgAdjacency,
   buildDistanceMatrix,
-  DP_EXACT_MAX,
-  heldKarp,
-  localSearch,
-  nearestNeighborPath,
+  DP_TIME_BUDGET_MS,
   orderCost,
+  solveOptimalOrder,
   type CostContext,
-  type SolveOptions,
 } from './tsp';
 import { FITNESS_PRESETS, type PresetId } from './fitness';
 import type { DistanceWeights, Song } from './types';
 
-export type SolveMethod = 'held-karp' | 'heuristic';
+export type SolveMethod = 'held-karp' | 'partitioned';
 
 export interface OptimizeRequest {
   songs: Song[];
@@ -25,9 +22,12 @@ export interface OptimizeRequest {
   weights?: DistanceWeights;
   /** Track id to place first. Defaults to the current first song. */
   startId?: string;
-  solve?: SolveOptions;
   /** Override the largest N solved exactly by Held–Karp DP. */
   exactMax?: number;
+  /** Wall-clock budget (ms) before splitting into halves. */
+  timeBudgetMs?: number;
+  /** Injectable RNG for the random partition (default Math.random). */
+  rng?: () => number;
 }
 
 export interface OptimizeResult {
@@ -37,8 +37,10 @@ export interface OptimizeResult {
   indexOrder: number[];
   weights: DistanceWeights;
   presetId: PresetId;
-  /** Whether the result is the exact DP optimum or a heuristic solution. */
+  /** Whether the result is the exact DP optimum or a partitioned approximation. */
   method: SolveMethod;
+  /** Number of exactly-solved segments (1 when fully exact; >1 when partitioned). */
+  segments: number;
   stats: {
     originalCost: number;
     optimizedCost: number;
@@ -61,6 +63,7 @@ export function optimizePlaylist(req: OptimizeRequest): OptimizeResult {
       weights,
       presetId: req.presetId,
       method: 'held-karp',
+      segments: 0,
       stats: {
         originalCost: 0,
         optimizedCost: 0,
@@ -82,19 +85,16 @@ export function optimizePlaylist(req: OptimizeRequest): OptimizeResult {
   // before/after comparison the user can reason about).
   const original = [startIndex, ...songs.map((_, i) => i).filter((i) => i !== startIndex)];
 
-  // Exact dynamic programming (Held–Karp) when small enough; otherwise a
-  // nearest-neighbor construction refined by 2-opt/Or-opt local search.
-  const exactMax = req.exactMax ?? DP_EXACT_MAX;
-  let improved: number[];
-  let method: SolveMethod;
-  if (n <= exactMax) {
-    improved = heldKarp(startIndex, ctx);
-    method = 'held-karp';
-  } else {
-    const constructed = nearestNeighborPath(startIndex, matrix);
-    improved = localSearch(constructed, ctx, req.solve);
-    method = 'heuristic';
-  }
+  // Exact dynamic programming (Held–Karp) when it fits within the size ceiling
+  // and time budget; otherwise recursively partition into randomly-split halves
+  // (the fixed start stays first) and solve each half exactly.
+  const solved = solveOptimalOrder(startIndex, ctx, {
+    exactMax: req.exactMax,
+    timeBudgetMs: req.timeBudgetMs ?? DP_TIME_BUDGET_MS,
+    rng: req.rng,
+  });
+  const improved = solved.indexOrder;
+  const method: SolveMethod = solved.exact ? 'held-karp' : 'partitioned';
 
   const originalCost = orderCost(original, ctx);
   const optimizedCost = orderCost(improved, ctx);
@@ -107,6 +107,7 @@ export function optimizePlaylist(req: OptimizeRequest): OptimizeResult {
     weights,
     presetId: req.presetId,
     method,
+    segments: solved.segments,
     stats: {
       originalCost,
       optimizedCost,

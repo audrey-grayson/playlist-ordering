@@ -5,6 +5,7 @@ import {
   localSearch,
   nearestNeighborPath,
   orderCost,
+  solveOptimalOrder,
   type CostContext,
 } from './tsp';
 import { FITNESS_PRESETS } from './fitness';
@@ -104,5 +105,65 @@ describe('heldKarp', () => {
     const songs = makeVariedSongs(1);
     const ctx: CostContext = { matrix: buildDistanceMatrix(songs, W), songs };
     expect(heldKarp(0, ctx)).toEqual([0]);
+  });
+});
+
+/** Small deterministic PRNG so partition tests are reproducible. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+describe('solveOptimalOrder', () => {
+  it('solves exactly (no partition) when within the exact ceiling', () => {
+    const songs = makeVariedSongs(10);
+    const matrix = buildDistanceMatrix(songs, W);
+    const ctx: CostContext = { matrix, songs };
+    const res = solveOptimalOrder(3, ctx, { exactMax: 20 });
+    expect(res.exact).toBe(true);
+    expect(res.segments).toBe(1);
+    expect(res.indexOrder).toEqual(heldKarp(3, ctx));
+  });
+
+  it('partitions when the exact ceiling is exceeded, keeping the first song', () => {
+    const songs = makeVariedSongs(14);
+    const matrix = buildDistanceMatrix(songs, W);
+    const ctx: CostContext = { matrix, songs };
+    const res = solveOptimalOrder(6, ctx, { exactMax: 4, rng: mulberry32(1) });
+    expect(res.exact).toBe(false);
+    expect(res.segments).toBeGreaterThan(1);
+    // Still a valid permutation of every track, with the pinned start first.
+    expect(res.indexOrder[0]).toBe(6);
+    expect(res.indexOrder.length).toBe(14);
+    expect(new Set(res.indexOrder).size).toBe(14);
+  });
+
+  it('is deterministic for a fixed RNG seed', () => {
+    const songs = makeVariedSongs(16);
+    const matrix = buildDistanceMatrix(songs, W);
+    const ctx: CostContext = { matrix, songs };
+    const a = solveOptimalOrder(0, ctx, { exactMax: 4, rng: mulberry32(42) });
+    const b = solveOptimalOrder(0, ctx, { exactMax: 4, rng: mulberry32(42) });
+    expect(a.indexOrder).toEqual(b.indexOrder);
+  });
+
+  it('terminates and stays valid even with a spent time budget', () => {
+    const songs = makeVariedSongs(15);
+    const matrix = buildDistanceMatrix(songs, W);
+    const ctx: CostContext = { matrix, songs };
+    // Zero budget forces every above-safe subset to "time out" and split.
+    const res = solveOptimalOrder(2, ctx, {
+      exactMax: 20,
+      timeBudgetMs: 0,
+      rng: mulberry32(7),
+    });
+    expect(res.indexOrder[0]).toBe(2);
+    expect(new Set(res.indexOrder).size).toBe(15);
   });
 });

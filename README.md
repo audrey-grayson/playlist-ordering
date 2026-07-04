@@ -45,16 +45,23 @@ objective:
 
 **Solver:** the playlist is an **open path** with a **fixed first song**.
 
-- **Small playlists (≤ 16 tracks): exact dynamic programming.** A Held–Karp DP
+- **Small playlists (≤ 20 tracks): exact dynamic programming.** A Held–Karp DP
   (`O(2ⁿ·n²)`) returns the *true optimum*. The global objectives are written as
   position-decomposable per-node penalties, so even Energy Arc / Mood Journey
   are solved exactly, not just pure-transition presets.
-- **Larger playlists: heuristic.** Nearest-neighbor construction refined by
-  **2-opt + Or-opt** local search under a time budget.
+- **Larger playlists: recursive random partition.** The solve runs under a
+  **4-second budget**. If the exact DP is too large to allocate or would exceed
+  the budget, the *remaining* tracks are randomly split into two halves — the
+  fixed first song stays first — and each half is solved independently (exactly,
+  or split again), then concatenated. This scales to any length while keeping
+  every segment locally optimal.
 
-The staged panel labels which was used (`exact (DP)` vs `heuristic`). Unit
-tests verify the DP matches a brute-force optimum and is never worse than the
-heuristic.
+The solve runs in a **Web Worker**, so the UI stays responsive and the loading
+spinner animates even during a multi-second solve. The staged panel labels which
+strategy was used (`exact (DP)` vs `split × N (DP)`). Unit tests verify the DP
+matches a brute-force optimum, and that the partition always returns a valid
+permutation with the pinned start, is deterministic under a seeded RNG, and
+terminates even with a spent time budget.
 
 ### Data efficiency
 
