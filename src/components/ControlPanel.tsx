@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import type { Song, DistanceWeights } from '../algorithm/types';
 import {
   FITNESS_PRESETS,
@@ -13,12 +14,16 @@ interface Props {
   startId: string | null;
   optimizing: boolean;
   confirming: boolean;
+  savingCopy: boolean;
   staged: OptimizeResult | null;
+  /** Whether the loaded playlist is owned by the current user. */
+  ownedByUser: boolean;
   onPresetChange: (id: PresetId) => void;
   onWeightsChange: (w: DistanceWeights) => void;
   onStartIdChange: (id: string) => void;
   onOptimize: () => void;
   onConfirm: () => void;
+  onSaveCopy: () => void;
   onDiscard: () => void;
 }
 
@@ -39,14 +44,31 @@ export function ControlPanel(props: Props) {
     startId,
     optimizing,
     confirming,
+    savingCopy,
     staged,
+    ownedByUser,
     onPresetChange,
     onWeightsChange,
     onStartIdChange,
     onOptimize,
     onConfirm,
+    onSaveCopy,
     onDiscard,
   } = props;
+
+  // Confirmation gate for saving a copy of a playlist the user doesn't own.
+  const [confirmCopy, setConfirmCopy] = useState(false);
+  const busy = confirming || savingCopy;
+
+  // Drop a pending confirmation when the staged preview goes away.
+  useEffect(() => {
+    if (!staged) setConfirmCopy(false);
+  }, [staged]);
+
+  const requestSaveCopy = () => {
+    if (ownedByUser) onSaveCopy();
+    else setConfirmCopy(true);
+  };
 
   const disabled = songs.length < 2;
   const preset = FITNESS_PRESETS[presetId];
@@ -74,26 +96,30 @@ export function ControlPanel(props: Props) {
         <p className="field-hint">{preset.description}</p>
       </section>
 
-      <section className="panel-section">
-        <label className="field-label">Component weights</label>
-        {WEIGHT_FIELDS.map((f) => (
-          <div className="slider-row" key={f.key}>
-            <div className="slider-head">
-              <span>{f.label}</span>
-              <span className="slider-val">{weights[f.key].toFixed(2)}</span>
+      <details className="panel-section weights-details">
+        <summary className="field-label weights-summary">
+          Component weights
+        </summary>
+        <div className="weights-body">
+          {WEIGHT_FIELDS.map((f) => (
+            <div className="slider-row" key={f.key}>
+              <div className="slider-head">
+                <span>{f.label}</span>
+                <span className="slider-val">{weights[f.key].toFixed(2)}</span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={weights[f.key]}
+                onChange={(e) => setWeight(f.key, Number(e.target.value))}
+              />
+              <div className="field-hint">{f.hint}</div>
             </div>
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.05}
-              value={weights[f.key]}
-              onChange={(e) => setWeight(f.key, Number(e.target.value))}
-            />
-            <div className="field-hint">{f.hint}</div>
-          </div>
-        ))}
-      </section>
+          ))}
+        </div>
+      </details>
 
       <section className="panel-section">
         <label className="field-label">Start with</label>
@@ -170,22 +196,57 @@ export function ControlPanel(props: Props) {
             This is a preview only — nothing is written to Spotify until you
             confirm.
           </p>
-          <div className="staged-actions">
-            <button
-              className="btn btn-primary"
-              onClick={onConfirm}
-              disabled={confirming}
-            >
-              {confirming ? 'Writing…' : 'Confirm & save to Spotify'}
-            </button>
-            <button
-              className="btn btn-danger"
-              onClick={onDiscard}
-              disabled={confirming}
-            >
-              Discard
-            </button>
-          </div>
+          {confirmCopy ? (
+            <div className="copy-confirm">
+              <p className="field-hint copy-confirm-msg">
+                You don't own this playlist. Save the reordering as a{' '}
+                <strong>new playlist</strong> in your library instead?
+              </p>
+              <div className="staged-actions">
+                <button
+                  className="btn btn-primary"
+                  onClick={() => {
+                    setConfirmCopy(false);
+                    onSaveCopy();
+                  }}
+                  disabled={busy}
+                >
+                  {savingCopy ? 'Saving…' : 'Save new playlist'}
+                </button>
+                <button
+                  className="btn btn-danger"
+                  onClick={() => setConfirmCopy(false)}
+                  disabled={busy}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="staged-actions">
+              <button
+                className="btn btn-primary"
+                onClick={onConfirm}
+                disabled={busy}
+              >
+                {confirming ? 'Writing…' : 'Confirm & overwrite original'}
+              </button>
+              <button
+                className="btn"
+                onClick={requestSaveCopy}
+                disabled={busy}
+              >
+                {savingCopy ? 'Saving…' : 'Save as new playlist'}
+              </button>
+              <button
+                className="btn btn-danger"
+                onClick={onDiscard}
+                disabled={busy}
+              >
+                Discard
+              </button>
+            </div>
+          )}
         </section>
       )}
     </aside>

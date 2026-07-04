@@ -175,6 +175,21 @@
   outline: 1px solid var(--accent-dim);
   background: rgba(29, 185, 84, 0.06);
 }
+.track-row:not(.track-head) {
+  cursor: pointer;
+}
+.track-row.is-selected {
+  outline: 1px solid var(--border);
+  background: var(--bg-elev-2);
+}
+.make-start-btn {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+.btn-small {
+  padding: 3px 10px;
+  font-size: 12px;
+}
 .track-idx {
   display: flex;
   align-items: center;
@@ -301,6 +316,32 @@
   padding: 8px 10px;
   font-size: 13px;
 }
+.weights-details {
+  padding-bottom: 12px;
+}
+.weights-summary {
+  cursor: pointer;
+  margin-bottom: 0;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.weights-summary::-webkit-details-marker {
+  display: none;
+}
+.weights-summary::before {
+  content: '▸';
+  font-size: 10px;
+  color: var(--text-faint);
+  transition: transform 0.12s ease;
+}
+.weights-details[open] .weights-summary::before {
+  transform: rotate(90deg);
+}
+.weights-body {
+  margin-top: 12px;
+}
 .slider-row {
   margin-bottom: 12px;
 }
@@ -392,6 +433,9 @@
   flex-direction: column;
   gap: 8px;
   margin-top: 12px;
+}
+.copy-confirm-msg {
+  color: #e5c789;
 }
 
 /* Banners */
