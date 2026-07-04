@@ -110,6 +110,22 @@ export const spotifyApi = {
     return request<SpotifyAudioAnalysis>(`/audio-analysis/${id}`);
   },
 
+  /** Create a new (empty) playlist in the given user's library. */
+  createPlaylist(
+    userId: string,
+    name: string,
+    opts: { description?: string; public?: boolean } = {},
+  ): Promise<SpotifyPlaylist> {
+    return request<SpotifyPlaylist>(`/users/${userId}/playlists`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name,
+        description: opts.description ?? '',
+        public: opts.public ?? false,
+      }),
+    });
+  },
+
   /**
    * Persist a reordering by replacing the playlist's items with `uris` in the
    * given order. Chunked: first PUT replaces with the first ≤100, then POSTs

@@ -52,6 +52,7 @@ export default function App() {
   const [staged, setStaged] = useState<OptimizeResult | null>(null);
   const [optimizing, setOptimizing] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [savingCopy, setSavingCopy] = useState(false);
   const [writeError, setWriteError] = useState<string | null>(null);
   const [writeSuccess, setWriteSuccess] = useState<string | null>(null);
 
@@ -93,6 +94,12 @@ export default function App() {
     songs.forEach((s, i) => m.set(s.id, i));
     return m;
   }, [songs]);
+
+  const selectedPlaylist = playlists.find((p) => p.id === selectedId) ?? null;
+  // In demo mode the user id is 'demo' and demo playlists are owned by 'demo',
+  // so this is true; unknown ownership is treated as "yours" (no false alarm).
+  const ownedByUser =
+    !selectedPlaylist || !user || selectedPlaylist.owner.id === user.id;
 
   const handleOptimize = () => {
     if (songs.length < 2) return;
@@ -159,6 +166,48 @@ export default function App() {
     worker.postMessage(req);
   };
 
+  const changeStart = (id: string) => {
+    setStartId(id);
+    setStaged(null);
+  };
+
+  const handleSaveCopy = async () => {
+    if (!staged || !selectedPlaylist) return;
+    if (demo) {
+      setWriteSuccess(
+        'Demo mode: a reordered copy would be saved to your library (nothing is written to Spotify).',
+      );
+      setStaged(null);
+      return;
+    }
+    if (!user) return;
+    setSavingCopy(true);
+    setWriteError(null);
+    setWriteSuccess(null);
+    try {
+      const done = startTimer();
+      const created = await spotifyApi.createPlaylist(
+        user.id,
+        `${selectedPlaylist.name} (optimized)`,
+        {
+          description: 'Reordered by Playlist Optimizer',
+          public: false,
+        },
+      );
+      await spotifyApi.replacePlaylistItems(
+        created.id,
+        staged.order.map((s) => s.uri),
+      );
+      perfLog('playlist.copy', done(), { tracks: staged.order.length });
+      setWriteSuccess(`Saved a new playlist "${created.name}" to your library.`);
+      setStaged(null);
+    } catch (e) {
+      setWriteError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingCopy(false);
+    }
+  };
+
   const handleConfirm = async () => {
     if (!staged || !selectedId) return;
     if (demo) {
@@ -198,7 +247,6 @@ export default function App() {
   }
 
   const displaySongs = staged ? staged.order : songs;
-  const selectedPlaylist = playlists.find((p) => p.id === selectedId) ?? null;
 
   return (
     <div className="app">
@@ -271,6 +319,7 @@ export default function App() {
             staged={Boolean(staged)}
             originalPositions={originalPositions}
             startId={startId}
+            onSetStart={changeStart}
           />
         </main>
 
@@ -281,15 +330,15 @@ export default function App() {
           startId={startId}
           optimizing={optimizing}
           confirming={confirming}
+          savingCopy={savingCopy}
           staged={staged}
+          ownedByUser={ownedByUser}
           onPresetChange={onPresetChange}
           onWeightsChange={onWeightsChange}
-          onStartIdChange={(id) => {
-            setStartId(id);
-            setStaged(null);
-          }}
+          onStartIdChange={changeStart}
           onOptimize={handleOptimize}
           onConfirm={handleConfirm}
+          onSaveCopy={handleSaveCopy}
           onDiscard={() => setStaged(null)}
         />
       </div>

@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { Song } from '../algorithm/types';
 import { formatBpm, formatDuration, keyName } from '../util/format';
 
@@ -9,6 +10,8 @@ interface Props {
   /** Original index of each song id, used to show move deltas when staged. */
   originalPositions: Map<string, number> | null;
   startId: string | null;
+  /** Make the given song the fixed starting track. */
+  onSetStart: (id: string) => void;
 }
 
 function MoveBadge({ delta }: { delta: number }) {
@@ -29,7 +32,10 @@ export function TrackList({
   staged,
   originalPositions,
   startId,
+  onSetStart,
 }: Props) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
   if (loading) return <div className="muted pad">Loading tracks…</div>;
   if (error) return <div className="banner banner-error">{error}</div>;
   if (songs.length === 0)
@@ -48,10 +54,15 @@ export function TrackList({
       {songs.map((s, i) => {
         const orig = originalPositions?.get(s.id);
         const delta = staged && orig != null ? i - orig : 0;
+        const isStart = s.id === startId;
+        const isSelected = s.id === selectedId;
         return (
           <div
             key={s.id}
-            className={`track-row ${s.id === startId ? 'is-start' : ''}`}
+            className={`track-row ${isStart ? 'is-start' : ''} ${
+              isSelected ? 'is-selected' : ''
+            }`}
+            onClick={() => setSelectedId(isSelected ? null : s.id)}
           >
             <div className="track-idx">
               {i + 1}
@@ -66,10 +77,22 @@ export function TrackList({
               <div className="track-names">
                 <div className="track-name">
                   {s.name}
-                  {s.id === startId && <span className="start-tag">start</span>}
+                  {isStart && <span className="start-tag">start</span>}
                 </div>
                 <div className="track-artist">{s.artists}</div>
               </div>
+              {isSelected && !isStart && (
+                <button
+                  className="btn btn-small make-start-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSetStart(s.id);
+                    setSelectedId(null);
+                  }}
+                >
+                  Make start
+                </button>
+              )}
             </div>
             <div className="track-attr">{keyName(s.features.key, s.features.mode)}</div>
             <div className="track-attr">{formatBpm(s.features.tempo)}</div>
